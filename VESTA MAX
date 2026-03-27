@@ -664,44 +664,50 @@ async function apiAnalyzeSpace(sysPromptText, imgDataUrl_1, imgDataUrl_2) {
   }
 }
 
-// 2. 调用 Imagen 接口渲染图片
+// 2. 调用 Gemini API 渲染图片 (深度修复版：使用原生多模态接口绕过白名单限制)
 async function apiGenerateImage(promptText, aspectRatio = "3:4") {
   const apiKey = getApiKey();
   if (!apiKey) return null;
 
-  // 【修复点】：Google API 弃用了 001 版本。这里已更新为目前稳定的 imagen-3.0-generate-002
-  // （如果你想体验最新一代模型，也可以把这里改成 "imagen-4.0-generate-001"）
-  const modelName = "imagen-3.0-generate-002"; 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:predict?key=${apiKey}`;
+  // 🚀 核心修复 1：放弃受限的 predict 接口，改用向个人完全免费开放的原生绘图模型
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`;
   
+  // 🚀 核心修复 2：新接口不再支持 parameters 传参，我们直接将比例诉求植入系统提示词中
+  const finalPrompt = promptText + `\n\n[System Instruction: You must generate the final image in ${aspectRatio} aspect ratio. Ensure it is high resolution, photorealistic, and strictly follows the spatial layout provided.]`;
+
+  // 🚀 核心修复 3：使用与文字大模型完全一致的 generateContent 标准报文
   const payload = {
-    instances:[{ prompt: promptText }],
-    parameters: {
-      sampleCount: 1,
-      aspectRatio: aspectRatio 
-    }
+    contents:[
+      {
+        parts: [{ text: finalPrompt }]
+      }
+    ]
   };
 
   try {
-    const res = await fetch(url, { 
-      method: 'POST', 
-      headers: { 'Content-Type': 'application/json' }, 
-      body: JSON.stringify(payload) 
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
     
-    // 捕获 API 层面的错误
+    // 捕获权限或网络错误
     if (data.error) throw new Error(data.error.message);
     
-    if (data.predictions && data.predictions.length > 0) {
-      // 修复点2：更严谨地获取官方返回的图片格式 (MIME Type)，通常是 image/jpeg 或 image/png
-      const mimeType = data.predictions[0].mimeType || "image/jpeg";
-      return `data:${mimeType};base64,${data.predictions[0].bytesBase64Encoded}`;
-    } else {
-      throw new Error("未能生成图片，API 返回了空数据。");
+    // 🚀 核心修复 4：解析全新的多模态返回结构 (Base64图片数据藏在 inlineData 中)
+    const parts = data.candidates?.[0]?.content?.parts;
+    if (parts) {
+      // 遍历所有返回块，找到图像数据块 (忽略附带的文本)
+      const imagePart = parts.find(p => p.inlineData);
+      if (imagePart) {
+        const mimeType = imagePart.inlineData.mimeType || "image/jpeg";
+        return `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      }
     }
+    throw new Error("API 调用成功，但模型未按预期返回图像数据。");
   } catch (err) {
-    alert("Imagen 渲染失败: " + err.message);
+    alert("渲染失败，请检查网络或 API Key 状态:\n\n" + err.message);
     return null;
   }
 }
